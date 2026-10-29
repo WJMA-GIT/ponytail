@@ -1,0 +1,84 @@
+name: sync-upstream
+
+# 把上游 DietrichGebert/ponytail 的改动合并进本 fork（merge 语义，绝不 force push /
+# reset --hard），冲突时中止并开 Issue 交人工处理。
+#
+# 触发：
+#   · 定时：每天 UTC 19:17（北京时间 03:17，低峰）
+#   · 手动：Actions → sync-upstream → Run workflow（可只做 dry_run 检查）
+#
+# 注意（fork 特有）：
+#   1. fork 里的 workflow 默认是**禁用**状态，首次需要 Actions 页点
+#      "I understand my workflows, go ahead and enable them"，或 `gh workflow enable sync-upstream.yml`。
+#   2. 定时任务只会在默认分支上跑；仓库 60 天无活动时 GitHub 会自动停用 schedule。
+#
+# 路径约定（重要）：
+#   上游文件 = 上游拥有并持续改动的文件（除 octop/ 外的一切）。
+#   我们的适配代码**只放 octop/**。上游没有也不该有 octop/ 目录；
+#   一旦上游新增同名目录，脚本会检测到重叠并直接中止，不做任何合并。
+
+on:
+  schedule:
+    - cron: "17 19 * * *"      # 每日 19:17 UTC = 03:17 CST
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "上游分支（默认 main）"
+        required: false
+        default: main
+      dry_run:
+        description: "只检查是否有更新，不合并"
+        type: boolean
+        default: false
+
+# 最小权限：推送合并结果需要 contents:write；冲突通知需要 issues:write。
+# 不引入任何 PAT —— 全部用内置 GITHUB_TOKEN。
+permissions:
+  contents: write
+  issues: write
+
+# 同一时刻只允许一个同步任务；不取消进行中的（避免半个合并被留下）
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: DietrichGebert/ponytail
+  TARGET_BRANCH: main
+  ADAPT_DIR: octop
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout fork (full history)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          # 合并需要完整历史，否则 git merge 无法找到共同祖先
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Merge upstream (no force push, no empty commit)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          UPSTREAM_REF: ${{ inputs.upstream_ref || 'main' }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+        run: bash octop/ci/sync-upstream.sh
+
+      - name: Append run info
+        if: always()
+        run: |
+          {
+            echo ""
+            echo "---"
+            echo "触发方式：\`${{ github.event_name }}\`　分支：\`${TARGET_BRANCH}\`"
+            echo "运行：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } >> "$GITHUB_STEP_SUMMARY"
