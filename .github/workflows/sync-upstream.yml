@@ -18,7 +18,7 @@ name: sync-upstream
 #   一旦上游新增同名目录，脚本会检测到重叠并直接中止，不做任何合并。
 #
 # 上游 CI 降噪：
-#   最后一步会把除 sync-upstream 之外、仍处于 active 的 workflow 逐个 disable（幂等）。
+#   最后一步会把除 sync-upstream / publish 之外、仍处于 active 的 workflow 逐个 disable（幂等）。
 #   只调 GitHub 的 disable 接口，不改任何文件内容 —— 这是与"上游文件只读"约定兼容的做法。
 #   为什么需要：实测（WJMA-GIT/wf-disable-probe，2026-10-29）disable 状态在**内容更新**后保留
 #   （state 仍为 disabled_manually），但文件被**删除后在原路径重建**（等同重命名）会恢复 active。
@@ -81,14 +81,15 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
         run: bash octop/ci/sync-upstream.sh
 
-      # 幂等降噪：除本工作流外，任何 active 的上游 workflow 一律 disable。
+      # 幂等降噪：除本工作流与 publish（仅 Release 触发）外，任何 active 的 workflow 一律 disable。
       # 用 always() 保证冲突/失败时也执行，避免带着噪音退出。
       - name: Keep upstream CI quiet (idempotent, API only)
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          KEEP_ENABLED: sync-upstream
+          # 保持启用的 workflow（空格分隔）：本工作流 + 上游 publish（仅 Release/tag 触发，不产生 push 噪音）
+          KEEP_ENABLED: sync-upstream publish
         run: |
           set -uo pipefail
           R="$GITHUB_REPOSITORY"
