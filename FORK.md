@@ -27,6 +27,26 @@
 
 本文件（`FORK.md`）与 `octop/` 一样属于我们的层，上游不会创建同名文件，因此不会冲突。
 
+## 上游 CI 降噪
+
+上游自带 `.github/workflows/test.yml`（push/PR 触发）。它在 fork 里对适配层没有意义，只会刷通知。
+
+处理方式：**用 GitHub 的 disable 接口关掉，不删文件、不改内容**（与「上游文件只读」约定兼容）。
+`sync-upstream` 的最后一个步骤是幂等的：除 `sync-upstream` 外，任何仍处于 `active` 的 workflow 都会被 disable。
+
+为什么需要这一步——实测结论（探针仓库 `WJMA-GIT/wf-disable-probe`，2026-10-29，已删除）：
+
+| 操作 | workflow 状态 |
+|---|---|
+| 初始 | `active` |
+| `PUT /actions/workflows/test.yml/disable` | `disabled_manually`（HTTP 204） |
+| **修改该文件内容并提交** | 仍 `disabled_manually`（workflow id 未变） |
+| **删除后在同一路径重建**（等同重命名） | **恢复 `active`** |
+
+所以：上游正常「改内容」不会让 test.yml 复活；只有它被删掉重建/改名才会。新增的自动步骤兜住这个极端情况。
+
+`publish.yml` 保持 active：它只在 Release/tag 触发，push 不会跑，不产生噪音。
+
 ## 分支策略
 
 | 分支 | 角色 |
