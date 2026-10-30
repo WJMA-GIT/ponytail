@@ -1,11 +1,30 @@
 # ponytail for Octop
 
-Two Octop plugins wrapping **upstream ponytail v5.3.3** (commit `568510c`):
+**一个** Octop 插件（`kind: tool`）承载 **两件事**，封装的是 **upstream ponytail v5.3.3**（commit `568510c`）：
 
-| 目录 | Octop kind | 作用 |
-|---|---|---|
-| `tool/` | `tool` | 把 ponytail 的规则 / 技能 / 命令 / 技术债扫描暴露成 6 个可调用工具 |
-| `hook/` | `hook` | 每轮把规则注入系统提示（等价上游 `pre_llm_call`），**ponytail 的原生语义** |
+| 能力 | 说明 |
+|---|---|
+| 6 个工具 | 规则 / 档位 / 技能 / 命令 / 技术债扫描 / 自检 |
+| 常驻注入 | `PonytailMiddleware` 每轮把规则追加到系统提示（等价上游 `pre_llm_call`） |
+
+### 为什么一个 `kind: tool` 插件能同时注册 middleware
+
+`PluginContext` 的两个方法是**硬校验**，不是分类：`tool()` 在 kind≠tool 时抛
+`ValueError`（`octop_harness/plugins/context.py:47-48`），`middleware()` 在 kind≠hook
+时抛（`context.py:63-64`）。但**下游完全不按 kind 过滤**：`to_loaded()` 原样复制
+`_tools` / `_middleware`（`context.py:152-160`），`all_tools()`（`registry.py:126-130`）
+与 `build_middleware_chain()`（`registry.py:146-154`）只读这两个列表；只有
+`all_channels()` 会看 kind（`registry.py:137`）。
+
+所以插件先按文档 API 调 `ctx.middleware(...)`（未来 Octop 放开就直接用），
+被 `ValueError` 拒绝时，把同样形状的注册对象追加到 `ctx._middleware`（`register_middleware()`）。
+这条兼容路径**当场校验、写日志、并由 `ponytail_doctor` 的 `auto_injection` 字段暴露**，
+不会静默失效（值：`documented` / `compatibility` / `unavailable`）。
+
+实测（本机 Octop）：p1 = `kind: tool` 里调 `ctx.middleware()` →
+`ValueError: plugin 'probe-p1' is kind='tool', not hook`（context.py:64）；
+合并后的插件 `plugged` 后 `PluginRegistry` 里是 `('ponytail', 'tool', 6, 1)` —— 6 个工具 + 1 个 middleware，
+`build_middleware_chain()` 里能看到 `PonytailMiddleware`。
 
 ## 为什么是这个形状
 
@@ -19,23 +38,21 @@ ponytail 不是一个 CLI、不是库、也不是服务——它是「提示词 
   技能正文与上游 `_filter_skill_body_for_mode` 逐字一致，档位优先级与上游
   （env > `config.json:defaultMode` > `full`）一致。
 
-`tool/` 与 `hook/` 各自独立安装，所以 `ponytail_runtime.py` 与 `_vendor/` 各存一份；
-`tests/test_runtime.py::test_both_plugins_ship_identical_runtime_and_vendor` 保证两份一致。
+只有一个插件目录，所以 `_vendor/ponytail/` 在磁盘上也只有一份（装好后约 128 KB；
+拆成两个包时是 84 KB × 2 + 代码 ≈ 236 KB）。
 
 ## 安装
 
 ```bash
-# 工具版
-octop plugin install ./octop/tool --force
-# 常驻注入版（建议同时装）
-octop plugin install ./octop/hook --force
-
-octop plugin list          # 应看到 ponytail (tool) / ponytail-hook (hook)
+octop plugin install ./octop/plugin --force
+octop plugin list          # 应看到 ponytail (tool)
 ```
+
+装一个就够：工具与常驻注入都在这个包里。
 
 装完如果 `octop run` 正在跑，执行 `POST /api/plugins/reload` 或重启服务。
 
-## 工具版：6 个工具
+## 6 个工具
 
 | 工具 | 用途 | 典型调用 |
 |---|---|---|
@@ -58,7 +75,7 @@ valid: off, lite, full, ultra
 `kind` 取值：`dependency_missing`（vendor 缺失/损坏）、`invalid_argument`（档位/技能/命令名）、
 `config_unwritable`（写不了配置）、`invalid_path`（扫描目录不存在）、`upstream_error`。
 
-## Hook 版：常驻注入
+## 常驻注入
 
 优先级 90（在 `BootstrapMiddleware` 的 100 之前），`wrap_model_call` /
 `awrap_model_call` 把规则追加到 **本次请求** 的 system message，不写回 checkpoint。
@@ -93,8 +110,8 @@ python3 octop/tools/make_fixtures.py           # 用未修改的上游重生成�
 ## 测试
 
 ```bash
-python3 -m unittest discover -s octop/tests -v                       # 纯 stdlib：24 项
-/app/.venv/bin/python -m unittest discover -s octop/tests -v         # 含插件契约：33 项
+python3 -m unittest discover -s octop/tests -v                       # 纯 stdlib
+/app/.venv/bin/python -m unittest discover -s octop/tests -v         # 含插件契约（共 35 项）
 /app/.venv/bin/python octop/tools/verify_install.py                  # 装完后的真调用
 ```
 
@@ -104,7 +121,7 @@ python3 -m unittest discover -s octop/tests -v                       # 纯 stdli
 python3 octop/tools/build_zips.py --out /tmp/octop-dist
 ```
 
-ZIP 内是唯一一个带 `plugin.yaml` 的根目录（`ponytail-octop-tool/`、`ponytail-octop-hook/`）。
+ZIP 内是唯一一个带 `plugin.yaml` 的根目录（`ponytail-octop/`）。
 
 ## 许可
 

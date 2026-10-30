@@ -17,8 +17,7 @@ from unittest import mock
 
 TESTS_DIR = Path(__file__).resolve().parent
 OCTOP_DIR = TESTS_DIR.parent
-TOOL_DIR = OCTOP_DIR / "tool"
-HOOK_DIR = OCTOP_DIR / "hook"
+PLUGIN_DIR = OCTOP_DIR / "plugin"
 FIXTURES = TESTS_DIR / "fixtures"
 LEVELS = ("off", "lite", "full", "ultra")
 SKILLS = (
@@ -30,7 +29,7 @@ SKILLS = (
     "ponytail-review",
 )
 
-sys.path.insert(0, str(TOOL_DIR))
+sys.path.insert(0, str(PLUGIN_DIR))
 import ponytail_runtime as rt  # noqa: E402  (path set above)
 
 
@@ -41,20 +40,13 @@ class VendorTests(unittest.TestCase):
         self.assertTrue(report["checksums"]["ok"], report["checksums"])
         self.assertGreater(report["checksums"]["checked"], 10)
 
-    def test_both_plugins_ship_identical_runtime_and_vendor(self) -> None:
-        self.assertEqual(
-            (TOOL_DIR / "ponytail_runtime.py").read_bytes(),
-            (HOOK_DIR / "ponytail_runtime.py").read_bytes(),
-            "the two plugin copies of ponytail_runtime.py must stay identical",
-        )
-        tool_vendor = TOOL_DIR / "_vendor" / "ponytail"
-        hook_vendor = HOOK_DIR / "_vendor" / "ponytail"
-        for relative in ("__init__.py", "CHECKSUMS.sha256", "skills/ponytail/SKILL.md"):
-            self.assertEqual(
-                (tool_vendor / relative).read_bytes(),
-                (hook_vendor / relative).read_bytes(),
-                relative,
-            )
+    def test_single_plugin_ships_one_vendor_copy(self) -> None:
+        """One plugin package => exactly one vendored upstream copy on disk."""
+        self.assertTrue((PLUGIN_DIR / "_vendor" / "ponytail" / "__init__.py").is_file())
+        siblings = [
+            path for path in OCTOP_DIR.iterdir() if path.is_dir() and (path / "plugin.yaml").is_file()
+        ]
+        self.assertEqual([path.name for path in siblings], ["plugin"], "only one plugin directory")
 
 
 class RulesEqualityTests(unittest.TestCase):

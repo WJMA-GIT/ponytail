@@ -1,8 +1,0 @@
-id: ponytail
-version: 5.3.3.1
-name: ponytail（规则工具）
-description: 把 ponytail 的规则/技能/命令/技术债扫描暴露成可调用工具（上游 v5.3.3 逐字内容）
-icon: icon.svg
-group: tools
-kind: tool
-entry: main.py

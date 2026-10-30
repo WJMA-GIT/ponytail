@@ -19,14 +19,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import re
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OCTOP_DIR = REPO_ROOT / "octop"
-PLUGIN_DIRS = (OCTOP_DIR / "tool", OCTOP_DIR / "hook")
+PLUGIN_DIRS = (OCTOP_DIR / "plugin",)
 VENDOR_NAME = Path("_vendor") / "ponytail"
 
 #: Upstream files the adapter actually reads. Everything is copied verbatim.
@@ -65,7 +65,7 @@ def manifest_for(vendor_root: Path) -> str:
     return "\n".join(lines) + "\n"
 
 
-def sync(plugin_dir: Path) -> Path:
+def sync(plugin_dir: Path, commit: str | None = None) -> Path:
     vendor_root = plugin_dir / VENDOR_NAME
     if vendor_root.exists():
         shutil.rmtree(vendor_root)
@@ -75,7 +75,7 @@ def sync(plugin_dir: Path) -> Path:
         destination = vendor_root / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
-    meta = upstream_meta()
+    meta = upstream_meta(commit)
     (vendor_root / "UPSTREAM_VERSION").write_text(
         f"version: {meta['version']}\ncommit: {meta['commit']}\n", encoding="utf-8"
     )
@@ -111,21 +111,23 @@ def check(plugin_dir: Path) -> list[str]:
     return problems
 
 
-def upstream_meta() -> dict[str, str]:
-    meta = {"commit": "unknown", "version": "unknown"}
-    try:
-        meta["commit"] = (
-            subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=REPO_ROOT,
-                capture_output=True,
-                text=True,
-                check=False,
-            ).stdout.strip()
-            or "unknown"
-        )
-    except OSError:  # pragma: no cover - git absent
-        pass
+def pinned_constant() -> str:
+    """``PINNED_COMMIT`` shipped in the plugin runtime — the single source of truth."""
+    runtime = OCTOP_DIR / "plugin" / "ponytail_runtime.py"
+    match = re.search(r'PINNED_COMMIT = "([0-9a-f]+)"', runtime.read_text(encoding="utf-8"))
+    return match.group(1) if match else "unknown"
+
+
+def upstream_meta(commit: str | None = None) -> dict[str, str]:
+    """Upstream version (from root ``plugin.yaml``) and the recorded sync commit.
+
+    The commit is **not** derived from this fork's HEAD: our own commits only add
+    ``octop/``, so HEAD would point at adapter work, not upstream. Pass
+    ``--commit`` when syncing a new upstream release; otherwise the value in
+    ``ponytail_runtime.PINNED_COMMIT`` is reused (and the consistency test fails
+    if the two drift apart).
+    """
+    meta = {"commit": (commit or pinned_constant()).strip() or "unknown", "version": "unknown"}
     manifest = REPO_ROOT / "plugin.yaml"
     if manifest.is_file():
         for line in manifest.read_text(encoding="utf-8").splitlines():
@@ -138,6 +140,11 @@ def upstream_meta() -> dict[str, str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="verify without writing")
+    parser.add_argument(
+        "--commit",
+        default=None,
+        help="upstream commit to record (default: PINNED_COMMIT from ponytail_runtime.py)",
+    )
     args = parser.parse_args(argv)
 
     if args.check:
@@ -153,9 +160,9 @@ def main(argv: list[str] | None = None) -> int:
         print("vendored copy matches upstream: ok")
         return 0
 
-    meta = upstream_meta()
+    meta = upstream_meta(args.commit)
     for plugin_dir in PLUGIN_DIRS:
-        vendor_root = sync(plugin_dir)
+        vendor_root = sync(plugin_dir, args.commit)
         count = sum(1 for path in vendor_root.rglob("*") if path.is_file())
         print(f"synced {plugin_dir.name}: {count} files -> {vendor_root.relative_to(REPO_ROOT)}")
     print(f"upstream version={meta['version']} commit={meta['commit']}")

@@ -24,8 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 OCTOP_DIR = REPO_ROOT / "octop"
 
 TARGETS = {
-    "tool": "ponytail-octop-tool",
-    "hook": "ponytail-octop-hook",
+    "plugin": "ponytail-octop",
 }
 
 #: Never ship caches or byte-code inside the archive.

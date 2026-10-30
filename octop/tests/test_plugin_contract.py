@@ -1,4 +1,7 @@
-"""Plugin-contract tests: real ``ctx.tool`` registration + hook injection.
+"""Plugin-contract tests: real ``ctx.tool`` + ``ctx.middleware`` registration.
+
+Proves the merged package (one ``kind: tool`` plugin) registers **both** tools and
+the always-on middleware, and that the middleware really injects upstream's text.
 
 These need the Octop runtime (``octop_harness`` / ``langchain``), so they skip
 cleanly under a plain ``python3``::
@@ -18,20 +21,20 @@ from typing import Any
 
 TESTS_DIR = Path(__file__).resolve().parent
 OCTOP_DIR = TESTS_DIR.parent
-TOOL_DIR = OCTOP_DIR / "tool"
-HOOK_DIR = OCTOP_DIR / "hook"
+PLUGIN_DIR = OCTOP_DIR / "plugin"
 
-sys.path.insert(0, str(TOOL_DIR))
-sys.path.insert(0, str(HOOK_DIR))
+sys.path.insert(0, str(PLUGIN_DIR))
 
 try:  # pragma: no cover - environment dependent
     from octop_harness.plugins import PluginContext
     from octop_harness.plugins.manifest import PluginManifest
+    from octop_harness.plugins.registry import PluginRegistry
 
     HAS_OCTOP = True
 except Exception:  # pragma: no cover
     PluginContext = None  # type: ignore[assignment]
     PluginManifest = None  # type: ignore[assignment]
+    PluginRegistry = None  # type: ignore[assignment]
     HAS_OCTOP = False
 
 try:  # pragma: no cover - environment dependent
@@ -82,25 +85,25 @@ def _system_text(request: FakeRequest) -> str:
 
 
 @unittest.skipUnless(HAS_OCTOP, "octop_harness not importable (run with the Octop venv python)")
-class ToolRegistrationTests(unittest.TestCase):
-    def _load_tool_plugin(self):
-        return _load(TOOL_DIR / "main.py", "ponytail_tool_main")
+class MergedRegistrationTests(unittest.TestCase):
+    """One ``kind: tool`` plugin must end up with tools *and* middleware."""
 
-    def test_setup_registers_six_tools(self) -> None:
-        module = self._load_tool_plugin()
+    def setUp(self) -> None:
+        self.module = _load(PLUGIN_DIR / "main.py", "ponytail_plugin_contract")
         manifest = PluginManifest.from_dict(
             {
                 "id": "ponytail",
-                "version": "5.3.3.1",
+                "version": "5.3.3.2",
                 "name": "ponytail",
                 "kind": "tool",
                 "entry": "main.py",
             }
         )
-        ctx = PluginContext(manifest=manifest, source_path=TOOL_DIR)
-        module.setup(ctx)
-        registry = ctx._tools  # noqa: SLF001 - the public surface is write-only
-        names = [entry.name for entry in registry]
+        self.ctx = PluginContext(manifest=manifest, source_path=PLUGIN_DIR)
+
+    def test_setup_registers_six_tools(self) -> None:
+        self.module.setup(self.ctx)
+        names = [entry.name for entry in self.ctx._tools]  # noqa: SLF001
         self.assertEqual(
             names,
             [
@@ -112,37 +115,62 @@ class ToolRegistrationTests(unittest.TestCase):
                 "ponytail_doctor",
             ],
         )
-        for entry in registry:
+        for entry in self.ctx._tools:  # noqa: SLF001
             self.assertTrue(entry.description, entry.name)
 
+    def test_setup_also_registers_the_middleware(self) -> None:
+        self.module.setup(self.ctx)
+        middleware = self.ctx._middleware  # noqa: SLF001
+        self.assertEqual(len(middleware), 1, "middleware must be registered too")
+        self.assertIsInstance(middleware[0].instance, self.module.PonytailMiddleware)
+        self.assertEqual(middleware[0].priority, self.module.PRIORITY)
+        self.assertEqual(self.module.hook_state(), "compatibility")
+
+    def test_registry_sees_both_surfaces(self) -> None:
+        PluginRegistry().clear()
+        self.addCleanup(PluginRegistry().clear)
+        from octop_harness.plugins.context import register_loaded
+
+        self.module.setup(self.ctx)
+        register_loaded(self.ctx)
+        registry = PluginRegistry()
+        loaded = registry.get("ponytail")
+        self.assertIsNotNone(loaded)
+        self.assertEqual(len(loaded.tools), 6, "tools survived the kind check bypass")
+        self.assertEqual(len(loaded.middleware), 1, "middleware survived the kind check bypass")
+        self.assertIn(
+            "PonytailMiddleware",
+            [type(item).__name__ for item in registry.build_middleware_chain()],
+        )
+
     def test_every_tool_returns_text(self) -> None:
-        module = self._load_tool_plugin()
+        self.module.setup(self.ctx)
         outputs = {
-            "rules": module.ponytail_rules("lite"),
-            "mode": module.ponytail_mode("get"),
-            "skill": module.ponytail_skill("ponytail-debt"),
-            "command": module.ponytail_command("ponytail", "ultra"),
-            "doctor": module.ponytail_doctor(),
+            "rules": self.module.ponytail_rules("lite"),
+            "mode": self.module.ponytail_mode("get"),
+            "skill": self.module.ponytail_skill("ponytail-debt"),
+            "command": self.module.ponytail_command("ponytail", "ultra"),
+            "doctor": self.module.ponytail_doctor(),
         }
         for name, output in outputs.items():
             self.assertIsInstance(output, str, name)
             self.assertTrue(output.strip(), name)
         self.assertIn("PONYTAIL MODE ACTIVE — level: lite", outputs["rules"])
-        self.assertIn("mode:", outputs["mode"])
+        self.assertIn("auto_injection: compatibility", outputs["mode"])
         self.assertIn("status: ok", outputs["doctor"])
 
     def test_errors_are_structured_not_raised(self) -> None:
-        module = self._load_tool_plugin()
-        bad_level = module.ponytail_rules("extreme")
+        self.module.setup(self.ctx)
+        bad_level = self.module.ponytail_rules("extreme")
         self.assertIn("status: error", bad_level)
         self.assertIn("kind: invalid_argument", bad_level)
         self.assertIn("valid: off, lite, full, ultra", bad_level)
 
-        bad_skill = module.ponytail_skill("nope")
+        bad_skill = self.module.ponytail_skill("nope")
         self.assertIn("kind: invalid_argument", bad_skill)
         self.assertIn("ponytail-review", bad_skill)
 
-        bad_path = module.ponytail_shortcut_debt("/nonexistent/path")
+        bad_path = self.module.ponytail_shortcut_debt("/nonexistent/path")
         self.assertIn("kind: invalid_path", bad_path)
 
 
@@ -162,7 +190,7 @@ class HookInjectionTests(unittest.TestCase):
             os.environ["PONYTAIL_DEFAULT_MODE"] = self._old_env
 
     def _middleware(self):
-        module = _load(HOOK_DIR / "main.py", "ponytail_hook_main")
+        module = _load(PLUGIN_DIR / "main.py", "ponytail_plugin_hook")
         return module, module.PonytailMiddleware()
 
     def test_injects_full_ruleset_when_absent(self) -> None:
@@ -172,7 +200,6 @@ class HookInjectionTests(unittest.TestCase):
         result = middleware.augment(request)
         text = _system_text(result)
         self.assertIn("PONYTAIL MODE ACTIVE — level: full", text)
-        # byte-identical tail to upstream's own output
         self.assertTrue(text.endswith(module.rt.rules_for("full")))
         self.assertEqual(len(result.messages), 1)
 
@@ -185,9 +212,7 @@ class HookInjectionTests(unittest.TestCase):
                 HumanMessage(content="hi"),
             ]
         )
-        result = middleware.augment(request)
-        self.assertIs(result, request)
-        self.assertIs(result.system_message, None)
+        self.assertIs(middleware.augment(request), request)
 
     def test_nothing_injected_when_off_and_clean_history(self) -> None:
         _module, middleware = self._middleware()
@@ -204,8 +229,7 @@ class HookInjectionTests(unittest.TestCase):
                 HumanMessage(content="stop ponytail"),
             ]
         )
-        result = middleware.augment(request)
-        self.assertEqual(_system_text(result), module.OFF_NOTICE)
+        self.assertEqual(_system_text(middleware.augment(request)), module.OFF_NOTICE)
 
     def test_upstream_system_message_is_preserved(self) -> None:
         _module, middleware = self._middleware()
@@ -214,28 +238,9 @@ class HookInjectionTests(unittest.TestCase):
             messages=[HumanMessage(content="hi")],
             system_message=SystemMessage(content="host prompt"),
         )
-        result = middleware.augment(request)
-        text = _system_text(result)
+        text = _system_text(middleware.augment(request))
         self.assertIn("host prompt", text)
         self.assertIn("PONYTAIL MODE ACTIVE — level: lite", text)
-
-    def test_setup_registers_middleware(self) -> None:
-        module = _load(HOOK_DIR / "main.py", "ponytail_hook_main_register")
-        manifest = PluginManifest.from_dict(
-            {
-                "id": "ponytail-hook",
-                "version": "5.3.3.1",
-                "name": "ponytail hook",
-                "kind": "hook",
-                "entry": "main.py",
-            }
-        )
-        ctx = PluginContext(manifest=manifest, source_path=HOOK_DIR)
-        module.setup(ctx)
-        entries = ctx._middleware  # noqa: SLF001
-        self.assertEqual(len(entries), 1)
-        self.assertIsInstance(entries[0].instance, module.PonytailMiddleware)
-        self.assertEqual(entries[0].priority, module.PRIORITY)
 
 
 if __name__ == "__main__":

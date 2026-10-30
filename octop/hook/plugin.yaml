@@ -1,8 +1,0 @@
-id: ponytail-hook
-version: 5.3.3.1
-name: ponytail（常驻注入）
-description: 每轮把 ponytail 规则注入系统提示（等价上游 pre_llm_call），档位由 PONYTAIL_DEFAULT_MODE / config.json 决定
-icon: icon.svg
-group: tools
-kind: hook
-entry: main.py
