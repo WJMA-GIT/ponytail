@@ -21,7 +21,7 @@ name: sync-upstream
 
 on:
   schedule:
-    - cron: "27 11 * * *"
+    - cron: "17 19 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -88,15 +88,19 @@ jobs:
           head_version=$(python3 octop-plugin/ci/sync_upstream.py upstream-version --ref HEAD)
           upstream_version=$(python3 octop-plugin/ci/sync_upstream.py upstream-version --ref "${UPSTREAM_REF}")
 
-          # 已合并版本是否发布完整（tag + Release + 正确资产名）。不完整 = 上次发布失败。
+          # 目标版本（合并后应达到的版本）的 Release 是否完整：tag + Release + 正确资产名。
+          # 不完整 = 上次发布失败，需要补发布。
           published=no
-          if gh release view "octop-${head_version}" --json assets --jq '.assets[].name' 2>/dev/null \
-             | grep -qx "ponytail-octop-${head_version}.zip"; then
+          if gh release view "octop-${upstream_version}" --json assets --jq '.assets[].name' 2>/dev/null \
+             | grep -qx "ponytail-octop-${upstream_version}.zip"; then
             published=yes
           fi
 
+          # 需要动作的三种情况：上游有新提交 / 我方元数据还没跟上上游版本（上次只合并了没同步）/
+          # 目标版本的 Release 不完整（上次发布失败）。
           need_work=no
-          if [ "${new_commits}" -gt 0 ] || [ "${published}" = no ]; then need_work=yes; fi
+          if [ "${new_commits}" -gt 0 ] || [ "${head_version}" != "${upstream_version}" ] \
+             || [ "${published}" = no ]; then need_work=yes; fi
           dry_run="${{ inputs.dry_run }}"
           if [ "${dry_run}" = "true" ]; then need_work=yes; fi
 
@@ -182,20 +186,26 @@ jobs:
           echo "| 测试 | 上游 CI 三件套 + \`octop-plugin/ci/test_ci.py\` 全绿 |" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Commit + push merged sync (no force, no empty commit)
-        if: steps.plan.outputs.new_commits != '0' && inputs.dry_run != true
+        if: steps.plan.outputs.need_work == 'yes' && inputs.dry_run != true
         env:
           TIP: ${{ steps.plan.outputs.tip }}
         run: |
           set -euo pipefail
           git add --all octop-plugin
           if git diff --cached --quiet; then
-            echo "vendor 无差异：只推送合并提交本身"
+            echo "vendor 无差异：没有要提交的内容"
           else
             git commit -m "chore(octop): sync vendor to upstream ${TIP} (v${VERSION})" \
                        -m "自动同步：octop-plugin/_vendor/ponytail 与合并后的上游原文一致。"
           fi
+          # 只在真的有新提交时推送：无更新时既不会空提交，也不会推任何东西。
+          ahead=$(git rev-list --count "origin/${TARGET_BRANCH}..HEAD")
+          if [ "${ahead}" -eq 0 ]; then
+            echo "没有需要推送的提交"
+            exit 0
+          fi
           git push origin "HEAD:${TARGET_BRANCH}"
-          echo "| 推送 | \`$(git rev-parse --short=7 HEAD)\` → \`${TARGET_BRANCH}\`（fast-forward，无 force） |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| 推送 | \`$(git rev-parse --short=7 HEAD)\` → \`${TARGET_BRANCH}\`（${ahead} 个提交，fast-forward，无 force） |" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Tag + Release (idempotent, never overwrites)
         if: steps.plan.outputs.need_work == 'yes' && inputs.dry_run != true
