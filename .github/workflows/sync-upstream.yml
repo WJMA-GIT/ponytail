@@ -85,8 +85,14 @@ jobs:
           set -euo pipefail
           new_commits=$(git rev-list --count "HEAD..${UPSTREAM_REF}")
           tip=$(git rev-parse --short=7 "${UPSTREAM_REF}")
-          head_version=$(python3 octop-plugin/ci/sync_upstream.py upstream-version --ref HEAD)
+          # 我方插件版本（octop-plugin/plugin.yaml，我方文件）对比上游声明的版本。
+          head_version=$(python3 octop-plugin/ci/sync_upstream.py adapter-version)
           upstream_version=$(python3 octop-plugin/ci/sync_upstream.py upstream-version --ref "${UPSTREAM_REF}")
+
+          # 仓库自洽性：vendor 是否等于当前 HEAD 的上游原文、版本三处是否一致。
+          # 不一致 = 上次同步只做了一半（例如合并已推送、vendor 没同步），必须补做。
+          stale=no
+          if ! python3 octop-plugin/ci/build_zips.py --check >/dev/null 2>&1; then stale=yes; fi
 
           # 目标版本（合并后应达到的版本）的 Release 是否完整：tag + Release + 正确资产名。
           # 不完整 = 上次发布失败，需要补发布。
@@ -96,11 +102,11 @@ jobs:
             published=yes
           fi
 
-          # 需要动作的三种情况：上游有新提交 / 我方元数据还没跟上上游版本（上次只合并了没同步）/
+          # 需要动作的四种情况：上游有新提交 / 我方版本没跟上上游 / 仓库不自洽（同步只做了一半）/
           # 目标版本的 Release 不完整（上次发布失败）。
           need_work=no
           if [ "${new_commits}" -gt 0 ] || [ "${head_version}" != "${upstream_version}" ] \
-             || [ "${published}" = no ]; then need_work=yes; fi
+             || [ "${stale}" = yes ] || [ "${published}" = no ]; then need_work=yes; fi
           dry_run="${{ inputs.dry_run }}"
           if [ "${dry_run}" = "true" ]; then need_work=yes; fi
 
@@ -111,7 +117,8 @@ jobs:
             echo "|---|---|"
             echo "| 触发 | \`${{ github.event_name }}\` |"
             echo "| 上游新提交 | ${new_commits}（上游版本 \`${upstream_version}\`，同步点 \`${tip}\`） |"
-            echo "| 当前 main 版本 | \`${head_version}\`，Release 完整：${published} |"
+            echo "| 我方版本 / 上游版本 | \`${head_version}\` / \`${upstream_version}\`，仓库自洽：$([ "${stale}" = yes ] && echo no || echo yes) |"
+            echo "| 目标版本 Release 完整 | ${published} |"
             echo "| 需要动作 | ${need_work}$( [ "${dry_run}" = "true" ] && echo '（dry_run：只构建+测试）') |"
           } >> "$GITHUB_STEP_SUMMARY"
 

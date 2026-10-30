@@ -7,7 +7,8 @@ writes into ``octop-plugin/`` — the directory this fork owns.
 
 Subcommands (any failure exits non-zero with a readable message):
 
-    upstream-version [--ref R]   print the version declared by ``plugin.yaml`` at R
+    upstream-version [--ref R]   print the version upstream declares (root ``plugin.yaml`` at R)
+    adapter-version              print the version this fork's plugin declares
     guard-upstream  [--ref R]    abort if upstream's tree touches a fork-owned path
     guard-merge     --base SHA   abort if this merge touched a fork-owned path
     vendor          --pinned SHA copy the vendored files and refresh the metadata
@@ -65,6 +66,14 @@ def upstream_version(ref: str) -> str:
     match = re.search(r"(?m)^version:\s*(\d+\.\d+\.\d+)\s*$", git("show", f"{ref}:plugin.yaml"))
     if not match:
         sys.exit(f"{ref}:plugin.yaml has no pinnable X.Y.Z version")
+    return match.group(1)
+
+
+def adapter_version() -> str:
+    """The version our adapter declares (``octop-plugin/plugin.yaml``, a fork-owned file)."""
+    match = re.search(r"(?m)^version:\s*(\d+\.\d+\.\d+)\s*$", MANIFEST.read_text(encoding="utf-8"))
+    if not match:
+        sys.exit("octop-plugin/plugin.yaml has no pinnable X.Y.Z version")
     return match.group(1)
 
 
@@ -153,6 +162,8 @@ def main() -> None:
     p = sub.add_parser("upstream-version")
     p.add_argument("--ref", default="upstream/main")
 
+    sub.add_parser("adapter-version")
+
     p = sub.add_parser("guard-upstream")
     p.add_argument("--ref", default="upstream/main")
 
@@ -166,6 +177,8 @@ def main() -> None:
 
     if args.cmd == "upstream-version":
         print(upstream_version(args.ref))
+    elif args.cmd == "adapter-version":
+        print(adapter_version())
     elif args.cmd == "guard-upstream":
         hits = protected_hits(git("ls-tree", "-r", "--name-only", args.ref).splitlines())
         if hits:

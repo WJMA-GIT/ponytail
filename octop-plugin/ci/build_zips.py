@@ -180,7 +180,8 @@ def asset_problems(asset: Path) -> list[str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.parse_args()
+    parser.add_argument("--check", action="store_true", help="只校验，不写 BUILD、不产出资产")
+    args = parser.parse_args()
 
     problems = version_problems(
         MANIFEST.read_text(encoding="utf-8"),
@@ -191,6 +192,9 @@ def main() -> None:
     problems += vendor_problems()
     if problems:
         sys.exit("package check failed:\n  " + "\n  ".join(problems))
+    if args.check:
+        print("check: ok（版本一致、vendor 与 HEAD 的上游原文一致、包结构完整）")
+        return
 
     version = metadata(MANIFEST.read_text(encoding="utf-8"))["version"]
     if not VERSION.fullmatch(version):
