@@ -54,8 +54,11 @@ print("uploaded:", len(entries))
 
 head_paths = {entry["path"] for entry in entries}
 remote_tree_api = api(f"repos/{REPO}/git/trees/{remote_tree}?recursive=1")
+# 只镜像 blob：目录条目（type=tree）不是文件，按名字"删除"会把整棵子树带走。
 remote_paths = [
-    entry["path"] for entry in remote_tree_api.get("tree", []) if entry["path"].startswith("octop/")
+    entry["path"]
+    for entry in remote_tree_api.get("tree", [])
+    if entry.get("type") == "blob" and entry["path"].startswith("octop/")
 ]
 gone = [path for path in remote_paths if path not in head_paths]
 for path in gone:
