@@ -1,8 +1,0 @@
-id: ponytail
-version: 5.3.3
-name: ponytail（规则 + 常驻注入）
-description: ponytail 技能/命令/技术债工具，并每轮把规则注入系统提示（上游 v5.3.3 逐字内容）
-icon: icon.svg
-group: tools
-kind: tool
-entry: main.py

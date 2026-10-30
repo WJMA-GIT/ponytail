@@ -1,0 +1,8 @@
+id: ponytail
+version: 5.3.3
+name: ponytail（单包：技能 + 注入 + 工具）
+description: ponytail 单包适配。6 个技能（可 /name 点名）、常驻规则注入（规则 + 技能清单）、6 个工具。上游 v5.3.3 逐字内容。
+icon: icon.svg
+group: tools
+kind: skill
+entry: main.py
