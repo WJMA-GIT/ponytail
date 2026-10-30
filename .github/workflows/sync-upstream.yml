@@ -38,6 +38,9 @@ env:
   UPSTREAM_REPO: DietrichGebert/ponytail
   UPSTREAM_REF: upstream/main
   TARGET_BRANCH: main
+  # 必须显式指定：仓库里有名为 upstream 的 remote 时，gh 会把"上游"当成 base repo，
+  # 于是 release/tag 的查询和创建都会打到 DietrichGebert/ponytail 上。
+  GH_REPO: ${{ github.repository }}
 
 permissions:
   contents: read
