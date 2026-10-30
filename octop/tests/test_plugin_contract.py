@@ -295,15 +295,63 @@ class HookInjectionTests(unittest.TestCase):
         self.assertTrue(module.rt.rules_for("off") == "")
 
     def test_skips_when_same_mode_already_present(self) -> None:
+        """幂等：本轮 system_message 里已有当前档位标记就不重复追加。"""
         _module, middleware = self._middleware()
         os.environ["PONYTAIL_DEFAULT_MODE"] = "full"
         request = FakeRequest(
-            messages=[
-                SystemMessage(content="PONYTAIL MODE ACTIVE — level: full\n\n# Ponytail"),
-                HumanMessage(content="hi"),
-            ]
+            messages=[HumanMessage(content="hi")],
+            system_message=SystemMessage(
+                content="PONYTAIL MODE ACTIVE — level: full\n\n# Ponytail"
+            ),
         )
         self.assertIs(middleware.augment(request), request)
+
+    def test_marker_quoted_in_history_does_not_block_injection(self) -> None:
+        """回归：历史消息里提到过标记（工具输出/分析文字/任务书）不等于已注入。
+
+        旧实现扫全部 messages，于是"只要有人贴过一次 level: full"，此后每轮都
+        跳过注入，规则静默消失。现在只认 system_message。
+        """
+        module, middleware = self._middleware()
+        os.environ["PONYTAIL_DEFAULT_MODE"] = "full"
+        request = FakeRequest(
+            messages=[
+                HumanMessage(content="PONYTAIL MODE ACTIVE — level: full"),
+                HumanMessage(content="上一轮我贴过自检输出，继续干活"),
+                HumanMessage(content="继续"),
+            ]
+        )
+        result = middleware.augment(request)
+        self.assertIsNot(result, request, "必须注入，不能因为历史里有标记就跳过")
+        text = _system_text(result)
+        self.assertIn("PONYTAIL MODE ACTIVE — level: full", text)
+        self.assertIn("PONYTAIL SKILLS", text)
+        self.assertTrue(len(text) > len(module.rt.rules_for("full")))
+
+    def test_off_with_stale_marker_in_history_still_cancels(self) -> None:
+        """切到 off：历史里残留旧标记时仍要发撤销（撤销宁多勿少）。"""
+        module, middleware = self._middleware()
+        os.environ["PONYTAIL_DEFAULT_MODE"] = "off"
+        request = FakeRequest(
+            messages=[
+                HumanMessage(content="PONYTAIL MODE ACTIVE — level: full"),
+                HumanMessage(content="关掉 ponytail"),
+            ]
+        )
+        self.assertEqual(_system_text(middleware.augment(request)), module.OFF_NOTICE)
+        self.assertNotIn("PONYTAIL SKILLS", _system_text(middleware.augment(request)))
+
+    def test_off_with_marker_in_system_message_still_cancels(self) -> None:
+        module, middleware = self._middleware()
+        os.environ["PONYTAIL_DEFAULT_MODE"] = "off"
+        request = FakeRequest(
+            messages=[HumanMessage(content="关掉")],
+            system_message=SystemMessage(
+                content="PONYTAIL MODE ACTIVE — level: ultra\n\n# Ponytail"
+            ),
+        )
+        text = _system_text(middleware.augment(request))
+        self.assertTrue(text.rstrip().endswith(module.OFF_NOTICE), text[-80:])
 
     def test_nothing_injected_when_off_and_clean_history(self) -> None:
         _module, middleware = self._middleware()

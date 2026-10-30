@@ -159,16 +159,56 @@ valid: off, lite, full, ultra
 优先级 90（在 `BootstrapMiddleware` 的 100 之前），`wrap_model_call` /
 `awrap_model_call` 把规则追加到 **本次请求** 的 system message，不写回 checkpoint。
 
-与上游 `_pre_llm_call` 等价的行为：
+**幂等判定只看 `system_message`**（注入就写在那里），不扫对话历史。这条是 5.3.3
+里修掉的 bug，见下面的 changelog：
 
 | 会话状态 | 行为 |
 |---|---|
-| 历史里没有 PONYTAIL 标记，模式 ≠ off | 注入该档位规则 |
-| 历史里没有标记，模式 = off | 不注入（没有要撤销的东西） |
-| 历史里已有当前档位的标记 | 不注入（避免同一份规则重复） |
-| 历史里是**别的**档位 | 注入；若当前是 off 则注入 `PONYTAIL MODE OFF` 撤销 |
+| `system_message` 里没有标记，模式 ≠ off | 注入该档位规则 + 技能清单 |
+| `system_message` 里已有当前档位的标记 | 不注入（避免同一份规则重复追加） |
+| `system_message` 里是**别的**档位 | 注入（覆盖旧档位，不累积） |
+| 模式 = off，`system_message` 干净且历史无标记 | 不注入 |
+| 模式 = off，`system_message` 或历史里有标记 | 注入 `PONYTAIL MODE OFF` |
+
+最后一行是刻意的**不对称**：注入要严格（历史里提到过标记不算已注入，否则规则会
+静默消失），撤销要宽松（多发一行 OFF 只是几十 token，漏发会让模型继续按旧规则行事）。
+撤销判定只做 `is None` 判断、不与标记值比较，所以"历史里已经有过 OFF"不会挡住这次撤销。
 
 档位每次请求重新解析，所以 `ponytail_mode(action="set")` 改完立即生效。
+
+## changelog（适配层）
+
+### 5.3.3 · 注入被历史消息里的标记"毒化"
+
+**症状**：某些线程里规则注入静默消失（注入长度 0），新开的线程却正常（3838 字符）。
+同一份插件、同一个档位，差别只在"这个线程的对话历史里有没有出现过
+`PONYTAIL MODE ACTIVE — level: full`"。
+
+**真因**：`augment()` 的幂等判定扫的是**全部历史消息**：
+
+```python
+seen = injected_mode(request.messages)   # ← 错：历史正文也算
+if seen == mode: return request          # 于是每轮都跳过注入
+```
+
+`injected_mode()` 的正则匹配任意消息正文。于是**只要线程里有人贴过一次这个标记**
+——工具自检输出、排障时贴的验证结果、分析文字里的引用，甚至任务书本身——此后该
+线程每轮都认为"已注入过"，规则与技能清单一起消失。团队线程实测 10 处命中。
+
+**修复**：只拿 `system_message` 判定（注入的落点），另加 off 档的放宽分支（见上表）：
+
+```python
+system_message = getattr(request, "system_message", None)
+seen = injected_mode([system_message] if system_message is not None else [])
+if seen == mode: return request
+if mode == "off":
+    if (seen or injected_mode(request.messages)) is None: return request
+```
+
+**回归测试**：`test_marker_quoted_in_history_does_not_block_injection`（历史含标记 →
+仍然注入）、`test_skips_when_same_mode_already_present`（system 已含 → 不重复）、
+`test_off_with_stale_marker_in_history_still_cancels`（off + 历史残留 → 仍撤销）、
+`test_off_with_marker_in_system_message_still_cancels`。
 
 ## 档位与配置
 

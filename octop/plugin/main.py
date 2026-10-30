@@ -124,7 +124,12 @@ def _message_texts(message: Any) -> list[str]:
 
 
 def injected_mode(messages: Any) -> str | None:
-    """Return the last ponytail level already present in ``messages`` (or None)."""
+    """Return the last ponytail level already present in ``messages`` (or None).
+
+    只该拿 **system_message** 来问（注入就写在那里）。拿对话历史来问会把
+    "用户/工具正文里提到过这个标记"误当成"已经注入过"：历史里哪怕只有一条
+    ``level: full``，此后每轮都不再注入，规则静默消失。
+    """
     for message in reversed(list(messages or [])):
         for text in _message_texts(message):
             matches = _MARKER.findall(text)
@@ -186,17 +191,28 @@ class PonytailMiddleware(AgentMiddleware[Any, Any]):
                 self._announced.add("mode")
                 logger.warning("ponytail: mode resolution failed (%s: %s)", exc.kind, exc.message)
             return request
-        seen = injected_mode(getattr(request, "messages", None))
+        # 注入是 append_to_system_message 写的，所以"是否已注入"只能看 system_message：
+        # messages 是对话历史，正文里提到过标记（工具输出、分析文字、任务书）不算。
+        system_message = getattr(request, "system_message", None)
+        seen = injected_mode([system_message] if system_message is not None else [])
         if seen == mode:
             return request
-        if seen is None and mode == "off":
-            return request
+        if mode == "off":
+            # 撤销宁多勿少：system_message 或历史任一处提过 ACTIVE 就发撤销标记。
+            # 多发一行 OFF 只是几十 token；漏发会让模型继续按旧规则行事。
+            if (seen or injected_mode(getattr(request, "messages", None))) is None:
+                return request
         context = self.context_for(mode)
         if not context:
             return request
         if mode not in self._announced:
             self._announced.add(mode)
-            logger.info("ponytail: injecting ruleset for mode=%s (%d chars)", mode, len(context))
+            logger.info(
+                "ponytail: injecting ruleset for mode=%s (%d chars, seen=%s)",
+                mode,
+                len(context),
+                seen,
+            )
         messages = [
             message
             for message in (getattr(request, "messages", None) or [])
