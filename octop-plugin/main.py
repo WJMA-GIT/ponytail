@@ -29,6 +29,7 @@ import sys
 from pathlib import Path
 from typing import Annotated, Any, Awaitable, Callable
 
+from langchain.agents.middleware import AgentMiddleware
 from octop_harness.plugins import PluginContext
 from octop_harness.plugins.registry import ToolRegistration
 
@@ -134,7 +135,7 @@ def _history_mentions_rules(messages: Any) -> bool:
     return False
 
 
-class PonytailMiddleware:
+class PonytailMiddleware(AgentMiddleware[Any, Any]):
     """Append rules + skill catalogue to the system message of every model call.
 
     Idempotency reads **only** ``request.system_message``. Earlier versions also
@@ -145,9 +146,12 @@ class PonytailMiddleware:
     """
 
     def __init__(self) -> None:
+        super().__init__()
         self._announced: set[str] = set()
 
-    # langchain AgentMiddleware duck-typing: no base class needed.
+    # langchain's middleware factory reads ``.name``; inheriting AgentMiddleware
+    # provides it. A duck-typed class without the base crashed agent build with
+    # ``AttributeError: 'PonytailMiddleware' object has no attribute 'name'``.
     def wrap_model_call(
         self,
         request: Any,
