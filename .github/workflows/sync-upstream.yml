@@ -1,0 +1,279 @@
+name: sync-upstream
+
+# 每日低峰把上游 DietrichGebert/ponytail 合并进本 fork，重新打包并发布
+# Release `octop-<上游版本>`。合并一律用 git merge：不 force push、不 reset。
+#
+# 触发：
+#   · 定时：每天 19:17 UTC（03:17 CST，低峰）
+#   · 手动：Actions → sync-upstream → Run workflow
+#
+# 两道守卫（命中即失败，危险结果不推送）：
+#   1. 合并前：上游树若出现我方路径（octop-plugin/、本工作流文件）→ 中止。
+#      只认这两处；.github/ 其余文件归上游，改了是正常合并，不算命中。
+#   2. 合并后：拿合并提交对比合并前 HEAD，本次合并若触碰我方路径 → 中止。
+#
+# 发布与同步在同一个 job 里完成：GITHUB_TOKEN 的 push 不会触发后续 workflow，
+# 所以 tag / Release 必须在这里做完。权限只有 contents: write（job 级，最小化）。
+#
+# 版本策略：插件版本严格等于上游版本，tag 为 `octop-<版本>`（唯一）。
+# 上游有提交但版本没变时照常同步内容，但不新发 Release（不覆盖、不捏造版本）。
+# 上次发布失败（合并已推送、Release 缺失）时，重跑会走"补发布"分支而不是当成无更新。
+
+on:
+  schedule:
+    - cron: "17 19 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "只构建 + 跑测试，不合并、不推送、不发布"
+        type: boolean
+        default: false
+
+# 同一时刻只允许一个同步任务；不取消进行中的，避免半个合并被留下。
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: DietrichGebert/ponytail
+  UPSTREAM_REF: upstream/main
+  TARGET_BRANCH: main
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout fork (full history — merge needs the merge base)
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          set -euo pipefail
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch --no-tags upstream main
+
+      - name: Plan (new commits? pending release?)
+        id: plan
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          new_commits=$(git rev-list --count "HEAD..${UPSTREAM_REF}")
+          tip=$(git rev-parse --short=7 "${UPSTREAM_REF}")
+          head_version=$(python3 octop-plugin/ci/sync_upstream.py upstream-version --ref HEAD)
+          upstream_version=$(python3 octop-plugin/ci/sync_upstream.py upstream-version --ref "${UPSTREAM_REF}")
+
+          # 已合并版本是否发布完整（tag + Release + 正确资产名）。不完整 = 上次发布失败。
+          published=no
+          if gh release view "octop-${head_version}" --json assets --jq '.assets[].name' 2>/dev/null \
+             | grep -qx "ponytail-octop-${head_version}.zip"; then
+            published=yes
+          fi
+
+          need_work=no
+          if [ "${new_commits}" -gt 0 ] || [ "${published}" = no ]; then need_work=yes; fi
+          dry_run="${{ inputs.dry_run }}"
+          if [ "${dry_run}" = "true" ]; then need_work=yes; fi
+
+          {
+            echo "### sync-upstream 本次运行"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "|---|---|"
+            echo "| 触发 | \`${{ github.event_name }}\` |"
+            echo "| 上游新提交 | ${new_commits}（上游版本 \`${upstream_version}\`，同步点 \`${tip}\`） |"
+            echo "| 当前 main 版本 | \`${head_version}\`，Release 完整：${published} |"
+            echo "| 需要动作 | ${need_work}$( [ "${dry_run}" = "true" ] && echo '（dry_run：只构建+测试）') |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          {
+            echo "new_commits=${new_commits}"
+            echo "tip=${tip}"
+            echo "upstream_version=${upstream_version}"
+            echo "need_work=${need_work}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Merge upstream (guarded)
+        if: steps.plan.outputs.need_work == 'yes' && steps.plan.outputs.new_commits != '0' && inputs.dry_run != true
+        env:
+          TIP: ${{ steps.plan.outputs.tip }}
+        run: |
+          set -euo pipefail
+          # 守卫 1：上游树不得占我方路径。
+          python3 octop-plugin/ci/sync_upstream.py guard-upstream --ref "${UPSTREAM_REF}"
+
+          base=$(git rev-parse HEAD)
+          branch="auto/sync-${TIP}"
+          echo "BASE_SHA=${base}"   >> "$GITHUB_ENV"
+          echo "SYNC_BRANCH=${branch}" >> "$GITHUB_ENV"
+          git switch --create "${branch}"
+
+          if ! git merge --no-ff --no-edit "${UPSTREAM_REF}"; then
+            git merge --abort || true
+            echo "**合并冲突**：上游 \`${TIP}\` 与 \`${base:0:7}\` 冲突，未合并、未推送，需人工处理。" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::merge conflict with ${UPSTREAM_REF} at ${TIP}"
+            exit 1
+          fi
+
+          # 守卫 2：只看本次合并带来的改动（我方 vendor/元数据改动发生在这之后）。
+          if ! python3 octop-plugin/ci/sync_upstream.py guard-merge --base "${base}"; then
+            echo "**守卫命中**：本次合并触碰了我方路径，已撤销（临时分支 \`${branch}\` 未推送，nothing published）。" >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::merge touched fork-owned paths; nothing pushed"
+            exit 1
+          fi
+
+          echo "| 合并提交 | \`$(git rev-parse --short=7 HEAD)\`（分叉点 \`${base:0:7}\`，临时分支 \`${branch}\`） |" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Sync vendor + version metadata
+        if: steps.plan.outputs.need_work == 'yes'
+        env:
+          TIP: ${{ steps.plan.outputs.tip }}
+        run: |
+          set -euo pipefail
+          python3 octop-plugin/ci/sync_upstream.py vendor --pinned "${TIP}"
+          version=$(python3 octop-plugin/ci/sync_upstream.py upstream-version --ref HEAD)
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+          echo "| 插件版本 | \`${version}\` |" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build asset + package checks
+        if: steps.plan.outputs.need_work == 'yes'
+        run: |
+          set -euo pipefail
+          python3 octop-plugin/ci/build_zips.py
+          {
+            echo "| 资产 | \`dist/ponytail-octop-${VERSION}.zip\` |"
+            echo "| 资产 sha256 | \`$(sha256sum "dist/ponytail-octop-${VERSION}.zip" | cut -d' ' -f1)\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Tests (gate before anything is published)
+        if: steps.plan.outputs.need_work == 'yes'
+        run: |
+          set -euo pipefail
+          pip install --quiet pandas
+          python3 octop-plugin/ci/test_ci.py
+          node scripts/check-rule-copies.js
+          node scripts/check-versions.js
+          npm test
+          echo "| 测试 | 上游 CI 三件套 + \`octop-plugin/ci/test_ci.py\` 全绿 |" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit + push merged sync (no force, no empty commit)
+        if: steps.plan.outputs.new_commits != '0' && inputs.dry_run != true
+        env:
+          TIP: ${{ steps.plan.outputs.tip }}
+        run: |
+          set -euo pipefail
+          git add --all octop-plugin
+          if git diff --cached --quiet; then
+            echo "vendor 无差异：只推送合并提交本身"
+          else
+            git commit -m "chore(octop): sync vendor to upstream ${TIP} (v${VERSION})" \
+                       -m "自动同步：octop-plugin/_vendor/ponytail 与合并后的上游原文一致。"
+          fi
+          git push origin "HEAD:${TARGET_BRANCH}"
+          echo "| 推送 | \`$(git rev-parse --short=7 HEAD)\` → \`${TARGET_BRANCH}\`（fast-forward，无 force） |" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Tag + Release (idempotent, never overwrites)
+        if: steps.plan.outputs.need_work == 'yes' && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW_COMMITS: ${{ steps.plan.outputs.new_commits }}
+          TIP: ${{ steps.plan.outputs.tip }}
+        run: |
+          set -uo pipefail
+          version="${VERSION}"
+          tag="octop-${version}"
+          asset="dist/ponytail-octop-${version}.zip"
+
+          fail() {
+            echo "::error::$*"
+            echo "**发布失败**：$*（未覆盖任何既有 Release）" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
+
+          [ -f "${asset}" ] || fail "缺少 ${asset}"
+
+          tag_exists=no
+          git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1 && tag_exists=yes
+          release_exists=no
+          gh release view "${tag}" >/dev/null 2>&1 && release_exists=yes
+          assets=""
+          if [ "${release_exists}" = yes ]; then
+            assets=$(gh release view "${tag}" --json assets --jq '.assets[].name' 2>/dev/null)
+          fi
+          expected="ponytail-octop-${version}.zip"
+
+          notes="${RUNNER_TEMP}/release-notes.md"
+          {
+            echo "版本 \`${version}\` = 上游 v${version}（同步点 \`${TIP}\`）。"
+            echo ""
+            echo "### 安装"
+            echo '```bash'
+            echo "octop plugin install ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${tag}/${expected} --force"
+            echo '```'
+            echo ""
+            echo "本次同步运行：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } > "${notes}"
+
+          if printf '%s\n' "${assets}" | grep -qx "${expected}"; then
+            echo "| 发布 | Release \`${tag}\` 已完整（资产 \`${expected}\` 在位），不覆盖 |" >> "$GITHUB_STEP_SUMMARY"
+            if [ "${NEW_COMMITS}" -gt 0 ]; then
+              echo "" >> "$GITHUB_STEP_SUMMARY"
+              echo "上游有 ${NEW_COMMITS} 个新提交，但版本仍是 \`${version}\`（tag \`octop-${version}\` 唯一）。内容已同步，本轮不新发 Release。" >> "$GITHUB_STEP_SUMMARY"
+              echo "::warning::upstream advanced without a version bump; content synced, no new release"
+            fi
+          elif [ "${release_exists}" = yes ]; then
+            if [ -z "${assets}" ]; then
+              gh release upload "${tag}" "${asset}" || fail "上传 ${expected} 到既有 Release ${tag} 失败"
+              echo "| 发布 | 补齐 Release \`${tag}\` 的资产 \`${expected}\` |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              fail "Release \`${tag}\` 已有其它资产（$(printf '%s' "${assets}" | tr '\n' ' ')），与 \`${expected}\` 不一致，需人工处理"
+            fi
+          elif [ "${tag_exists}" = yes ]; then
+            gh release create "${tag}" "${asset}" --verify-tag \
+              --title "ponytail for Octop v${version}" --notes-file "${notes}" \
+              || fail "为既有 tag ${tag} 创建 Release 失败"
+            echo "| 发布 | 补发 Release \`${tag}\`（tag 已存在） |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            gh release create "${tag}" "${asset}" --target "$(git rev-parse HEAD)" \
+              --title "ponytail for Octop v${version}" --notes-file "${notes}" \
+              || fail "创建 Release ${tag} 失败"
+            echo "| 发布 | 新建 tag \`${tag}\` + Release（资产 \`${expected}\`） |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Verdict
+        if: always()
+        run: |
+          {
+            echo ""
+            echo "运行：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            if [ "${{ job.status }}" = "success" ]; then
+              echo "**结果：成功**"
+            else
+              echo "**结果：失败** — 见上方失败步骤；未推送危险结果，失败原因已写入本 Summary。"
+            fi
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              echo "dry_run：只做了构建 + 测试，未合并、未推送、未发布。"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
