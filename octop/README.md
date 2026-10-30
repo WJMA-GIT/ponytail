@@ -92,33 +92,39 @@ octop plugin list          # 应看到 ponytail (tool) v5.3.3
 
 装完如果 `octop run` 正在跑，执行 `POST /api/plugins/reload` 或重启服务。
 
-## 技能写入工作区（让 6 个技能"被看见"）
+## 技能清单随注入下发（不写工作区）
 
-官方把 6 个 `SKILL.md` 列进各 agent 的技能清单，模型一眼看到名字与 description，
-用户也能 `/ponytail-review` 点名。Octop 的技能清单来自工作区的 `skills/<slug>/`，
-所以这一步需要**显式写入**——插件本身不能改工作区：
+官方把 6 个 `SKILL.md` 列进技能清单，模型一轮就看见名字与描述。Octop 插件不能改
+工作区，也不该把技能复制给每个 agent，所以这里**走同一条注入通道**：规则后面追加
+一段技能清单，模型不必先想到"有个工具"才去调。
 
-```bash
-# 写入当前 agent 工作区（不会覆盖已有同名技能）
-# 装好的插件里（脚本随 ZIP 一起分发）
-python3 ~/.octop/plugins/ponytail/install_skills.py --workspace /path/to/agent-workspace
-# 或在源码 checkout 里
-python3 octop/plugin/install_skills.py --workspace /path/to/agent-workspace
+清单长这样（描述取自各 `SKILL.md` frontmatter 的**第一句**，逐字，不会与上游漂移）：
 
-# 只看会做什么
-python3 octop/plugin/install_skills.py --workspace . --dry-run
-
-# 撤销：只删本工具装的（目录里有 .ponytail-skill 标记）
-python3 octop/plugin/install_skills.py --workspace . --remove
+```
+PONYTAIL SKILLS（正文用 ponytail_skill(name=...) 取）
+- ponytail — Lazy senior dev mode: the smallest change that fully solves the task, …｜写代码或评审前的总则与档位
+- ponytail-audit — Quality audit of a whole repo: …｜整仓安全与质量审计
+- ponytail-debt — List every `shortcut:` comment …｜列 shortcut: 技术债台账
+- ponytail-gain — Show ponytail's measured savings …｜看基准省下的数字
+- ponytail-help — Quick reference for ponytail levels, skills and commands.｜查档位/技能/命令速查
+- ponytail-review — Quality review of a change: …｜评审 diff / PR / 上一个提交
+命令形式用 ponytail_command(name=..., command_args=...)，拿到的是已渲染 {{args}} 的 prompt（只有 ponytail 模板带占位符）。
 ```
 
-写入后用 `ponytail_doctor()` 的 `workspace_skills: 6/6` 确认；下一轮会话的系统提示
-技能清单里就会出现 `ponytail` / `ponytail-review` / … 六项，并支持 `/ponytail-review`
-点名（Octop 的 `/name` 规则只认技能清单里的 name/slug，不认工具名）。
+**成本**（`tiktoken` cl100k_base 实测）：清单 **977 字符 / 327 token**；注入总量从
+2859 字符（639 token）涨到 **3838 字符 / 967 token**。也就是每次模型调用多 327 token
+（+51%）。名字 + 极短描述的极限压法是 ~60 token，但那就退化成"知道有这回事"，
+失去"知道该用哪个"——不值。
 
-**副作用（请知情）**：这会在你的工作区创建 `skills/ponytail*/` 六个目录，每个含
-`SKILL.md` 与 `.ponytail-skill` 标记。工作区已有的同名技能**不会被覆盖**（平台既有语义：
-工作区优先），所以如果你自己维护过同名技能，它们保持原样。撤销即上面那条 `--remove`。
+**off 档**：规则不注入时，清单也一起不注入，只留 `PONYTAIL MODE OFF` 撤销标记。
+理由：档位关了还塞技能清单，等于用上下文把用户按回 ponytail 流程，与 OFF 冲突；
+工具仍在，用户显式要求时照样能调。`ponytail_doctor` 的 `skills_injected` 会照实显示
+`no (mode=off)`。
+
+**已废弃**：早期版本用 `install_skills.py` 把 6 个 `SKILL.md` 复制到
+`<workspace>/skills/`（目的是拿到 `/ponytail-review` 这种点名触发）。该做法会污染
+工作区、卸载易残留，已移除脚本与相关测试。代价是不再支持 `/ponytail-review` 点名——
+需要时直接说"用 ponytail-review 审这个 diff"，或调 `ponytail_command`。
 
 ## 6 个工具
 

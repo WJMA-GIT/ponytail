@@ -225,6 +225,30 @@ def _skill_path(name: str) -> Path:
     return path
 
 
+def skill_summaries() -> list[dict[str, str]]:
+    """``[{name, description}]`` straight from each SKILL.md frontmatter.
+
+    ``description`` is the frontmatter text **up to its first sentence** — the
+    remainder is upstream's "Use for …" traffic hints, which the injected block
+    states more cheaply in one line per skill. Everything here is verbatim
+    upstream wording, so it cannot drift from the SKILL.md files.
+    """
+    summaries: list[dict[str, str]] = []
+    root = vendor_root() / "skills"
+    for name in skill_names():
+        path = root / name / "SKILL.md"
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise PonytailError(f"cannot read skill {name!r}: {exc}") from exc
+        front = text.split("---")[1] if text.startswith("---") else ""
+        match = re.search(r"description:\s*>?-?\s*((?:.|\n)*?)(?=\n[a-z]+:|\Z)", front)
+        description = " ".join(match.group(1).split()) if match else ""
+        sentences = re.split(r"(?<=[.!?])\s+", description, maxsplit=1)
+        summaries.append({"name": name, "description": sentences[0]})
+    return summaries
+
+
 def skill_body(name: str, level: str | None = None) -> str:
     """Frontmatter-stripped, mode-filtered SKILL.md body (upstream's own filter)."""
     if level is not None and normalize_level(level) is None:

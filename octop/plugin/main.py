@@ -61,6 +61,37 @@ _MARKER = re.compile(r"PONYTAIL MODE (?:ACTIVE — level: ([a-z]+)|OFF)")
 #: Upstream sends this when the mode is off but rules were injected earlier.
 OFF_NOTICE = "PONYTAIL MODE OFF"
 
+#: 每个技能一句话"什么时候用"。名字/描述来自 SKILL.md frontmatter，这里只补触发场景，
+#: 避免把上游 "Use for …" 的整段 traffic hints 再抄一遍（那是 441 token，这里约 60）。
+_SKILL_WHEN = {
+    "ponytail": "写代码或评审前的总则与档位",
+    "ponytail-review": "评审 diff / PR / 上一个提交",
+    "ponytail-audit": "整仓安全与质量审计",
+    "ponytail-debt": "列 shortcut: 技术债台账",
+    "ponytail-gain": "看基准省下的数字",
+    "ponytail-help": "查档位/技能/命令速查",
+}
+
+
+def skills_context() -> str:
+    """注入用的技能清单：名字 + 一句话描述 + 何时用 + 怎么取正文。
+
+    与物理安装 SKILL.md 相比，这里不写任何工作区文件；模型在系统提示里就能看到
+    6 个技能，因此不必"先想到有个工具"。描述取自 SKILL.md frontmatter 的第一句
+    （逐字），不会与上游漂移。
+    """
+    lines = ["PONYTAIL SKILLS（正文用 ponytail_skill(name=...) 取）"]
+    for entry in rt.skill_summaries():
+        when = _SKILL_WHEN.get(entry["name"], "")
+        suffix = f"｜{when}" if when else ""
+        lines.append(f"- {entry['name']} — {entry['description']}{suffix}")
+    lines.append(
+        '命令形式用 ponytail_command(name=..., command_args=...)，拿到的是已渲染 '
+        "{{args}} 的 prompt（只有 ponytail 模板带占位符）。"
+    )
+    return "\n".join(lines)
+
+
 #: Runs before BootstrapMiddleware (priority 100) so onboarding text lands last.
 PRIORITY = 90
 
@@ -129,9 +160,16 @@ class PonytailMiddleware(AgentMiddleware[Any, Any]):
     # ── context injection (upstream-equivalent) ─────────────────────────────
 
     def context_for(self, mode: str) -> str | None:
-        """Ruleset for ``mode``; ``None`` when the vendor is unusable."""
+        """Ruleset + skill list for ``mode``; ``None`` when the vendor is unusable.
+
+        ``off`` 只下发撤销标记：档位关了还塞技能清单，等于用上下文把用户按回
+        ponytail 流程，与 OFF 的语义冲突（工具仍可按需调用，不受影响）。
+        """
         try:
-            return rt.rules_for(mode) or OFF_NOTICE
+            rules = rt.rules_for(mode)
+            if not rules:
+                return OFF_NOTICE
+            return f"{rules}\n\n{skills_context()}"
         except rt.PonytailError as exc:
             if mode not in self._announced:
                 self._announced.add(mode)
@@ -495,23 +533,19 @@ def ponytail_doctor() -> str:
         problems = checks.get("problems") or [checks.get("message", "unknown")]
         lines.append(f"checksums_problems: {', '.join(str(p) for p in problems)}")
     lines.append(f"skills: {report['skills']}")
-    workspace_found, workspace_expected = _workspace_skills()
-    lines.append(
-        f"workspace_skills: {workspace_found}/{workspace_expected}"
-        + ("" if workspace_found == workspace_expected else " (run install_skills.py --workspace .)")
-    )
+    try:
+        skills_chars = len(skills_context())
+        lines.append(f"skills_prompt: {skills_chars} chars ({len(rt.skill_names())} skills)")
+        lines.append(
+            "skills_injected: "
+            + ("no (mode=off)" if report["mode"] == "off" else "with rules")
+        )
+    except rt.PonytailError as exc:
+        lines.append(f"skills_prompt: unavailable ({exc.kind})")
     lines.append(f"commands: {report['commands']}")
     lines.append(f"config: {report['config_path']}")
     lines.append(f"mode: {report['mode']} (source={report['mode_source']})")
     return "\n".join(lines)
-
-
-def _workspace_skills() -> tuple[int, int]:
-    """``(installed, expected)`` for the six skills under the agent workspace."""
-    root = Path.cwd() / "skills"
-    expected = rt.skill_names()
-    found = sum(1 for name in expected if (root / name / "SKILL.md").is_file())
-    return found, len(expected)
 
 
 def setup(ctx: PluginContext) -> None:

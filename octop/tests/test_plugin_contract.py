@@ -253,8 +253,46 @@ class HookInjectionTests(unittest.TestCase):
         result = middleware.augment(request)
         text = _system_text(result)
         self.assertIn("PONYTAIL MODE ACTIVE — level: full", text)
-        self.assertTrue(text.endswith(module.rt.rules_for("full")))
+        # 规则在前、技能清单在后；规则本身仍是上游逐字内容
+        self.assertTrue(text.startswith(module.rt.rules_for("full")))
+        self.assertIn(module.skills_context(), text)
         self.assertEqual(len(result.messages), 1)
+
+    def test_injection_lists_all_six_skills(self) -> None:
+        """清单进了上下文，模型不必先调工具就知道有哪 6 个技能。"""
+        _module, middleware = self._middleware()
+        os.environ["PONYTAIL_DEFAULT_MODE"] = "full"
+        text = _system_text(
+            middleware.augment(FakeRequest(messages=[HumanMessage(content="hi")]))
+        )
+        for name in [
+            "ponytail",
+            "ponytail-review",
+            "ponytail-audit",
+            "ponytail-debt",
+            "ponytail-gain",
+            "ponytail-help",
+        ]:
+            self.assertIn(f"- {name} — ", text, name)
+        self.assertIn("ponytail_skill(name=...)", text)
+        self.assertIn("ponytail_command(name=...", text)
+
+    def test_off_mode_injects_no_skill_list(self) -> None:
+        """off 档连清单一起停：否则等于用上下文把用户按回 ponytail 流程。"""
+        module, middleware = self._middleware()
+        os.environ["PONYTAIL_DEFAULT_MODE"] = "off"
+        request = FakeRequest(
+            messages=[
+                HumanMessage(content="hi"),
+                SystemMessage(content="PONYTAIL MODE ACTIVE — level: full"),
+            ]
+        )
+        text = _system_text(middleware.augment(request))
+        self.assertIn("PONYTAIL MODE OFF", text)
+        self.assertNotIn("PONYTAIL SKILLS", text)
+        self.assertNotIn("ponytail-review —", text)
+        self.assertEqual(text.strip(), "PONYTAIL MODE OFF")
+        self.assertTrue(module.rt.rules_for("off") == "")
 
     def test_skips_when_same_mode_already_present(self) -> None:
         _module, middleware = self._middleware()

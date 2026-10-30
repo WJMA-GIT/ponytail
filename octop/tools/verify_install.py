@@ -107,7 +107,8 @@ def main() -> int:
     print(f"mode: {mode} (source={runtime.mode_source() if runtime else '?'})")
     print(f"injected_chars: {len(text)}")
     print(f"injected_head: {text.splitlines()[0] if text else '(none)'}")
-    print(f"injected_tail_is_upstream_rules: {bool(expected) and text.endswith(expected)}")
+    print(f"injected_head_is_upstream_rules: {bool(expected) and text.startswith(expected)}")
+    print(f"injected_has_skills_block: {'PONYTAIL SKILLS' in text}")
     print(f"messages_untouched: {injected.messages == request.messages}")
     return 0
 
