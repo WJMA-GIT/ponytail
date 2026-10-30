@@ -143,6 +143,59 @@ class MergedRegistrationTests(unittest.TestCase):
             [type(item).__name__ for item in registry.build_middleware_chain()],
         )
 
+    def test_every_tool_parameter_documents_itself(self) -> None:
+        """The platform builds tools with ``parse_docstring=False``.
+
+        Only ``Annotated[type, "..."]`` survives into the JSON schema, so every
+        parameter must carry one — otherwise the model sees a bare ``string``
+        and guesses. A missing description turns this test red.
+        """
+        from octop_harness.plugins.tools import _to_structured_tool  # noqa: PLC0415
+
+        self.module.setup(self.ctx)
+        seen: list[str] = []
+        for entry in self.ctx._tools:  # noqa: SLF001
+            tool = _to_structured_tool(entry)
+            for name, spec in tool.args.items():
+                seen.append(f"{entry.name}.{name}")
+                self.assertTrue(
+                    str(spec.get("description", "")).strip(),
+                    f"{entry.name}.{name} has no schema description",
+                )
+        # 6 tools / 10 params: a new undocumented parameter must not slip in.
+        self.assertEqual(
+            sorted(seen),
+            sorted(
+                [
+                    "ponytail_rules.level",
+                    "ponytail_mode.action",
+                    "ponytail_mode.level",
+                    "ponytail_skill.name",
+                    "ponytail_skill.level",
+                    "ponytail_skill.include_prompt",
+                    "ponytail_command.name",
+                    "ponytail_command.command_args",
+                    "ponytail_shortcut_debt.root",
+                    "ponytail_shortcut_debt.limit",
+                ]
+            ),
+        )
+
+    def test_command_args_actually_reach_the_template(self) -> None:
+        """``args`` was renamed to ``command_args``: pydantic turns a parameter
+        named ``args`` into ``v__args`` (array), which the model could never
+        fill — the upstream ``{{args}}`` substitution was dead."""
+        from octop_harness.plugins.tools import _to_structured_tool  # noqa: PLC0415
+
+        self.module.setup(self.ctx)
+        entry = next(e for e in self.ctx._tools if e.name == "ponytail_command")  # noqa: SLF001
+        tool = _to_structured_tool(entry)
+        self.assertIn("command_args", tool.args)
+        self.assertNotIn("v__args", tool.args)
+        # 只有 ponytail.toml 的模板带 {{args}}（档位），其余 5 个没有占位符
+        out = tool.invoke({"name": "ponytail", "command_args": "ultra"})
+        self.assertIn("Switch to ponytail ultra mode", out)
+
     def test_every_tool_returns_text(self) -> None:
         self.module.setup(self.ctx)
         outputs = {

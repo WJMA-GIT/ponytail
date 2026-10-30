@@ -36,7 +36,7 @@ import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 from deepagents.middleware._utils import append_to_system_message
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
@@ -254,7 +254,14 @@ def _unexpected(exc: Exception) -> str:
     return _fail(rt.PonytailError(f"{type(exc).__name__}: {exc}"))
 
 
-def ponytail_rules(level: str = "") -> str:
+def ponytail_rules(
+    level: Annotated[
+        str,
+        "档位，取值只能是 off / lite / full / ultra。留空（默认）用当前配置，"
+        "优先级 环境变量 PONYTAIL_DEFAULT_MODE > config.json 的 defaultMode > full。"
+        "写代码或评审前要锁定强度就显式传 full 或 ultra；传其它值返回结构化错误。",
+    ] = "",
+) -> str:
     """返回 ponytail 规则全文（与上游 build_injected_context 逐字一致）。
 
     Args:
@@ -269,7 +276,18 @@ def ponytail_rules(level: str = "") -> str:
         return _unexpected(exc)
 
 
-def ponytail_mode(action: str = "get", level: str = "") -> str:
+def ponytail_mode(
+    action: Annotated[
+        str,
+        "要做什么：get 查看当前档位与来源（默认）；set 切换档位（此时必须同时传 "
+        "level）。只有这两个取值，其它值返回结构化错误而不是抛异常。",
+    ] = "get",
+    level: Annotated[
+        str,
+        "目标档位，取值只能是 off / lite / full / ultra。action=set 时必填；"
+        "action=get 时忽略。写错会返回 kind=invalid_level 并列出合法值。",
+    ] = "",
+) -> str:
     """查看或切换 ponytail 档位（写入上游兼容的 config.json）。
 
     Args:
@@ -312,7 +330,25 @@ def ponytail_mode(action: str = "get", level: str = "") -> str:
         return _unexpected(exc)
 
 
-def ponytail_skill(name: str, level: str = "", include_prompt: bool = False) -> str:
+def ponytail_skill(
+    name: Annotated[
+        str,
+        "技能名，取值只能是 ponytail / ponytail-review / ponytail-audit / "
+        "ponytail-debt / ponytail-gain / ponytail-help。要做质量评审传 "
+        "ponytail-review，安全与边界审查传 ponytail-audit，清技术债传 "
+        "ponytail-debt。传错返回 kind=unknown_skill 并列出现有技能名。",
+    ],
+    level: Annotated[
+        str,
+        "过滤时用的档位，取值 off / lite / full / ultra；留空用当前配置"
+        "（与 ponytail_mode get 显示的一致）。",
+    ] = "",
+    include_prompt: Annotated[
+        bool,
+        "为 true 时在技能正文前附上同名命令的定义（description + prompt），"
+        "一次拿到「怎么触发 + 正文怎么写」；默认 false 只返回技能正文。",
+    ] = False,
+) -> str:
     """返回某个 ponytail 技能的正文（去 frontmatter、按档位过滤，与上游一致）。
 
     Args:
@@ -341,16 +377,35 @@ def ponytail_skill(name: str, level: str = "", include_prompt: bool = False) -> 
         return _unexpected(exc)
 
 
-def ponytail_command(name: str, args: str = "") -> str:
+def ponytail_command(
+    name: Annotated[
+        str,
+        "命令名，取值只能是 ponytail / ponytail-review / ponytail-audit / "
+        "ponytail-debt / ponytail-gain / ponytail-help。它对应上游的斜杠命令 "
+        "/<name>，传错返回 kind=unknown_command 并列出合法名。",
+    ],
+    # 不叫 args：pydantic 会把名为 args 的参数改名成 v__args（数组），
+    # 模型既看不到说明也传不进来 —— 上游斜杠命令的 {{args}} 就断了。
+    command_args: Annotated[
+        str,
+        "替换进命令模板 {{args}} 的内容。注意：6 个命令里只有 ponytail 的模板"
+        "带 {{args}}（用来指定档位 lite/full/ultra），其余 5 个模板没有占位符，"
+        "传了也不会插入——那些命令把要审的对象靠对话上下文表达。留空即替换成空串。"
+        "拿到返回的 prompt 后应立即按它执行，而不是复述给用户。",
+    ] = "",
+) -> str:
     """返回 ponytail 斜杠命令的定义（描述 + 已替换 {{args}} 的提示词）。
+
+    返回的是可执行的提示词本体：调用后应立刻按 prompt 的要求去做（例如真的去
+    读代码并给 findings），不要只把它转述给用户。
 
     Args:
         name: 命令名，`ponytail` / `ponytail-review` / `ponytail-audit` /
             `ponytail-debt` / `ponytail-gain` / `ponytail-help`。
-        args: 传给命令的参数（如要审阅的路径或补充说明），可为空。
+        command_args: 传给命令的参数（如要审阅的路径或补充说明），可为空。
     """
     try:
-        definition = rt.command_definition((name or "").strip(), args)
+        definition = rt.command_definition((name or "").strip(), command_args)
         return "\n".join(
             [
                 f"command: {definition['name']}",
@@ -365,7 +420,17 @@ def ponytail_command(name: str, args: str = "") -> str:
         return _unexpected(exc)
 
 
-def ponytail_shortcut_debt(root: str = ".", limit: int = 50) -> str:
+def ponytail_shortcut_debt(
+    root: Annotated[
+        str,
+        "要扫描的目录，默认 .（当前工作目录）。可以指向子目录缩小范围；"
+        "不会跟随 git 子模块，也不读工作区之外的路径。",
+    ] = ".",
+    limit: Annotated[
+        int,
+        "最多返回多少条，默认 50。超出只截断输出，found 统计值仍是全量。",
+    ] = 50,
+) -> str:
     """扫描仓库里所有 `shortcut:` 注释，列出上限与升级路径。
 
     Args:
@@ -399,7 +464,11 @@ def ponytail_shortcut_debt(root: str = ".", limit: int = 50) -> str:
 
 
 def ponytail_doctor() -> str:
-    """自检：vendored 上游副本、校验和、技能/命令数量、配置路径、档位来源与注入状态。"""
+    """自检：vendored 上游副本、校验和、技能/命令数量、配置路径、档位来源与注入状态。
+
+    额外报告工作区 ``skills/`` 里是否已落地 6 个技能（落地后模型能在系统提示的
+    技能清单里直接看到它们，也能用 /ponytail-review 点名）。
+    """
     try:
         report = rt.doctor()
     except rt.PonytailError as exc:
@@ -426,10 +495,23 @@ def ponytail_doctor() -> str:
         problems = checks.get("problems") or [checks.get("message", "unknown")]
         lines.append(f"checksums_problems: {', '.join(str(p) for p in problems)}")
     lines.append(f"skills: {report['skills']}")
+    workspace_found, workspace_expected = _workspace_skills()
+    lines.append(
+        f"workspace_skills: {workspace_found}/{workspace_expected}"
+        + ("" if workspace_found == workspace_expected else " (run install_skills.py --workspace .)")
+    )
     lines.append(f"commands: {report['commands']}")
     lines.append(f"config: {report['config_path']}")
     lines.append(f"mode: {report['mode']} (source={report['mode_source']})")
     return "\n".join(lines)
+
+
+def _workspace_skills() -> tuple[int, int]:
+    """``(installed, expected)`` for the six skills under the agent workspace."""
+    root = Path.cwd() / "skills"
+    expected = rt.skill_names()
+    found = sum(1 for name in expected if (root / name / "SKILL.md").is_file())
+    return found, len(expected)
 
 
 def setup(ctx: PluginContext) -> None:

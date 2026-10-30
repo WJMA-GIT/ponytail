@@ -92,6 +92,34 @@ octop plugin list          # 应看到 ponytail (tool) v5.3.3
 
 装完如果 `octop run` 正在跑，执行 `POST /api/plugins/reload` 或重启服务。
 
+## 技能写入工作区（让 6 个技能"被看见"）
+
+官方把 6 个 `SKILL.md` 列进各 agent 的技能清单，模型一眼看到名字与 description，
+用户也能 `/ponytail-review` 点名。Octop 的技能清单来自工作区的 `skills/<slug>/`，
+所以这一步需要**显式写入**——插件本身不能改工作区：
+
+```bash
+# 写入当前 agent 工作区（不会覆盖已有同名技能）
+# 装好的插件里（脚本随 ZIP 一起分发）
+python3 ~/.octop/plugins/ponytail/install_skills.py --workspace /path/to/agent-workspace
+# 或在源码 checkout 里
+python3 octop/plugin/install_skills.py --workspace /path/to/agent-workspace
+
+# 只看会做什么
+python3 octop/plugin/install_skills.py --workspace . --dry-run
+
+# 撤销：只删本工具装的（目录里有 .ponytail-skill 标记）
+python3 octop/plugin/install_skills.py --workspace . --remove
+```
+
+写入后用 `ponytail_doctor()` 的 `workspace_skills: 6/6` 确认；下一轮会话的系统提示
+技能清单里就会出现 `ponytail` / `ponytail-review` / … 六项，并支持 `/ponytail-review`
+点名（Octop 的 `/name` 规则只认技能清单里的 name/slug，不认工具名）。
+
+**副作用（请知情）**：这会在你的工作区创建 `skills/ponytail*/` 六个目录，每个含
+`SKILL.md` 与 `.ponytail-skill` 标记。工作区已有的同名技能**不会被覆盖**（平台既有语义：
+工作区优先），所以如果你自己维护过同名技能，它们保持原样。撤销即上面那条 `--remove`。
+
 ## 6 个工具
 
 | 工具 | 用途 | 典型调用 |
@@ -99,9 +127,14 @@ octop plugin list          # 应看到 ponytail (tool) v5.3.3
 | `ponytail_rules` | 取规则全文（与上游逐字一致） | `ponytail_rules(level="ultra")` |
 | `ponytail_mode` | 查看 / 切换档位（写入上游兼容的 `config.json`） | `ponytail_mode(action="set", level="lite")` |
 | `ponytail_skill` | 取技能正文（按档位过滤） | `ponytail_skill(name="ponytail-review", include_prompt=True)` |
-| `ponytail_command` | 取斜杠命令定义（已替换 `{{args}}`） | `ponytail_command(name="ponytail-audit")` |
+| `ponytail_command` | 取斜杠命令定义（已替换 `{{args}}`） | `ponytail_command(name="ponytail", command_args="ultra")` |
 | `ponytail_shortcut_debt` | 扫描仓库里的 `shortcut:` 注释 | `ponytail_shortcut_debt(root=".", limit=20)` |
 | `ponytail_doctor` | 自检：vendor 校验和 / 技能数 / 配置路径 / 档位来源 | `ponytail_doctor()` |
+
+参数说明走 `Annotated[type, "..."]`：平台的 `StructuredTool.from_function` 用
+`parse_docstring=False`，docstring 里的 `Args:` **不会**进 schema，只有 `Annotated`
+的说明会被模型看到。`octop/tests/test_plugin_contract.py` 会断言 10 个参数每个都有
+schema description，漏一个就红。
 
 错误不会抛异常，而是返回结构化文本：
 

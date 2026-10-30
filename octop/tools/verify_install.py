@@ -72,7 +72,7 @@ def main() -> int:
         ("ponytail_mode", {"action": "get"}),
         ("ponytail_rules", {"level": "lite"}),
         ("ponytail_skill", {"name": "ponytail-debt", "level": "full"}),
-        ("ponytail_command", {"name": "ponytail-review", "args": "octop/"}),
+        ("ponytail_command", {"name": "ponytail", "command_args": "ultra"}),
         ("ponytail_shortcut_debt", {"root": str(root.parent.parent), "limit": 5}),
         ("ponytail_doctor", {}),
     ]
