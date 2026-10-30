@@ -31,10 +31,13 @@ from typing import Any
 
 PLUGIN_DIR = Path(__file__).resolve().parent
 
-#: Upstream commit the vendored copy was taken from (see ``_vendor/ponytail/CHECKSUMS.sha256``).
-PINNED_COMMIT = "568510c"
-#: Upstream release recorded in ``plugin.yaml`` at that commit.
+#: Upstream release. The plugin version **is** the upstream version — never suffixed.
+#: Written by ``octop/tools/sync_upstream.py`` from upstream's own ``plugin.yaml``.
 UPSTREAM_VERSION = "5.3.3"
+#: Upstream sync point (tip of upstream/main when the fork last merged).
+PINNED_COMMIT = "568510c"
+#: Newest upstream commit that touched the vendored files (provenance of the bytes).
+CONTENT_COMMIT = "ca88b4f377fd94f780ac9035808dc4dc54e7a9cf"
 
 #: Documented order of upstream's modes (upstream keeps them in a set).
 LEVELS: tuple[str, ...] = ("off", "lite", "full", "ultra")
@@ -332,6 +335,7 @@ def doctor() -> dict[str, Any]:
         return report
     meta = read_upstream_meta()
     report["pinned_commit"] = meta.get("commit", PINNED_COMMIT)
+    report["content_commit"] = meta.get("content_commit", CONTENT_COMMIT)
     report["upstream_version"] = meta.get("version", UPSTREAM_VERSION)
     report["vendor"] = {"ok": True, "path": str(root)}
     checksums = root / "CHECKSUMS.sha256"
@@ -342,6 +346,19 @@ def doctor() -> dict[str, Any]:
     report["mode"] = default_mode()
     report["mode_source"] = mode_source()
     return report
+
+
+def read_build_label() -> str:
+    """Package build label written by ``build_zips.py`` (empty for a dev checkout).
+
+    The plugin version always equals the upstream version, so adapter-only fixes
+    are told apart by this label (see octop/README.md).
+    """
+    try:
+        text = (PLUGIN_DIR / "BUILD").read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+    return text.splitlines()[0] if text else ""
 
 
 def read_upstream_meta() -> dict[str, str]:

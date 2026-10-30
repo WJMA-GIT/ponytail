@@ -26,6 +26,42 @@
 合并后的插件 `plugged` 后 `PluginRegistry` 里是 `('ponytail', 'tool', 6, 1)` —— 6 个工具 + 1 个 middleware，
 `build_middleware_chain()` 里能看到 `PonytailMiddleware`。
 
+## 版本策略：插件版本 = 上游版本
+
+`plugin.yaml` 的 `version` **就是上游 ponytail 的版本**（当前 `5.3.3`），不加任何后缀。
+这个值不是手写的：`octop/tools/sync_upstream.py` 从**上游自己的根 `plugin.yaml`** 读取，
+并同时重写三处：
+
+| 落点 | 内容 |
+|---|---|
+| `octop/plugin/plugin.yaml` → `version` | 上游版本 |
+| `octop/plugin/ponytail_runtime.py` → `UPSTREAM_VERSION` / `PINNED_COMMIT` / `CONTENT_COMMIT` | 版本 + 同步点 + vendored 字节的最后一次上游提交 |
+| `octop/plugin/_vendor/ponytail/UPSTREAM_VERSION` | 同上，供运行时自检 |
+
+上游升到 5.3.4 时，合并上游 → 跑一次 sync，版本号自动变成 `5.3.4`；
+`sync_upstream.py --check` 会把这些一致性检查一起做（版本、vendored 字节、provenance），
+**没有需要手工维护的常量**。
+
+### 适配层自己修了 bug、上游还没升版怎么办
+
+版本号必须与上游一致，所以**不能**用 `5.3.3.1` 这种后缀。区分办法：
+
+| 载体 | 做法 |
+|---|---|
+| Release tag | `octop-5.3.3`（版本部分固定）；适配层重发时用 `octop-5.3.3+build.2` —— `+` 是 SemVer 构建元数据，版本号本身仍是 `5.3.3` |
+| ZIP 文件名 | 恒为 `ponytail-octop-5.3.3.zip`（跟 `plugin.yaml` 一致） |
+| 包内 `BUILD` 文件 | 打包时写入 `<适配提交>-<UTC 时间戳>`，不进 git；`ponytail_doctor` 会显示 `adapter_build:` |
+| Release notes | 写明适配提交与改动 |
+
+代价与风险（说清楚）：
+
+- Octop 里看到的插件版本永远是 `5.3.3`，**看不出是两个不同构建** —— 所以 `ponytail_doctor`
+  的 `adapter_build` 行是唯一可靠的运行期区分手段，报障时必须让用户带上它。
+- 同名 ZIP（不同 tag）意味着下载地址不同但文件名一样，运维脚本若按文件名缓存会拿错版本 ——
+  脚本请按 tag URL 取，不要缓存本地同名文件。
+- 选择「覆盖同名 Release」会更糟：旧构建不可追溯，手里装着旧包的人无法自证版本。
+  所以这里明确采用「新 tag + 同名 ZIP + BUILD 标记」。
+
 ## 为什么是这个形状
 
 ponytail 不是一个 CLI、不是库、也不是服务——它是「提示词 + 技能包」。它唯一可编程的
@@ -44,8 +80,12 @@ ponytail 不是一个 CLI、不是库、也不是服务——它是「提示词 
 ## 安装
 
 ```bash
+# 从本地 checkout
 octop plugin install ./octop/plugin --force
-octop plugin list          # 应看到 ponytail (tool)
+# 或从 Release（版本号与上游一致）
+octop plugin install https://github.com/WJMA-GIT/ponytail/releases/download/octop-5.3.3/ponytail-octop-5.3.3.zip --force
+
+octop plugin list          # 应看到 ponytail (tool) v5.3.3
 ```
 
 装一个就够：工具与常驻注入都在这个包里。
@@ -104,8 +144,16 @@ python3 octop/tools/sync_upstream.py --check   # 只校验，漂移则退出码 
 python3 octop/tools/make_fixtures.py           # 用未修改的上游重生成行为基线
 ```
 
-上游版本升级流程：合并上游 → `sync_upstream.py` → `make_fixtures.py` → 跑测试 →
-更新 `plugin.yaml` 的版本号与 `ponytail_runtime.py` 里的 `PINNED_COMMIT`。
+上游版本升级流程（**不需要手工改任何版本号**）：
+
+```bash
+git merge upstream/main
+python3 octop/tools/sync_upstream.py     # 自动写入上游版本 + 两类 commit
+python3 octop/tools/make_fixtures.py     # 重生成行为基线
+python3 -m unittest discover -s octop/tests
+```
+
+`sync_upstream.py --check` 会在版本、vendored 字节或 provenance 落后时报错并给出修复命令。
 
 ## 测试
 
@@ -119,6 +167,8 @@ python3 -m unittest discover -s octop/tests -v                       # 纯 stdli
 
 ```bash
 python3 octop/tools/build_zips.py --out /tmp/octop-dist
+# 适配层重发时给个可追溯的构建标记（写进包内 BUILD 文件）
+python3 octop/tools/build_zips.py --out /tmp/octop-dist --build-label adapter-<sha7>
 ```
 
 ZIP 内是唯一一个带 `plugin.yaml` 的根目录（`ponytail-octop/`）。

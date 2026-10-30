@@ -93,7 +93,7 @@ class MergedRegistrationTests(unittest.TestCase):
         manifest = PluginManifest.from_dict(
             {
                 "id": "ponytail",
-                "version": "5.3.3.2",
+                "version": "5.3.3",
                 "name": "ponytail",
                 "kind": "tool",
                 "entry": "main.py",

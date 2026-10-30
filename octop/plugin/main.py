@@ -410,7 +410,9 @@ def ponytail_doctor() -> str:
     lines = [
         "status: ok" if vendor.get("ok") else "status: error",
         f"upstream_version: {report['upstream_version']}",
-        f"pinned_commit: {report['pinned_commit']}",
+        f"sync_point: {report['pinned_commit']}",
+        f"content_commit: {str(report.get('content_commit', '?'))[:12]}",
+        f"adapter_build: {rt.read_build_label() or 'dev'}",
         f"auto_injection: {hook_state()}",
     ]
     if not vendor.get("ok"):

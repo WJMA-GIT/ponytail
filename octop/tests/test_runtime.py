@@ -7,8 +7,10 @@ Run::
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -225,6 +227,53 @@ class DoctorTests(unittest.TestCase):
         meta = rt.read_upstream_meta()
         self.assertEqual(meta["version"], rt.UPSTREAM_VERSION)
         self.assertTrue(meta["commit"].startswith(rt.PINNED_COMMIT))
+        self.assertTrue(meta["content_commit"].startswith(rt.CONTENT_COMMIT[:7]))
+
+
+class VersionPolicyTests(unittest.TestCase):
+    """Plugin version == upstream version, generated — never hand-suffixed."""
+
+    def _manifest_version(self) -> str:
+        for line in (PLUGIN_DIR / "plugin.yaml").read_text(encoding="utf-8").splitlines():
+            if line.startswith("version:"):
+                return line.split(":", 1)[1].strip()
+        self.fail("plugin.yaml has no version")
+
+    def test_plugin_version_equals_upstream_version(self) -> None:
+        version = self._manifest_version()
+        self.assertRegex(version, r"^\d+\.\d+\.\d+$", "no build/adaptation suffix allowed")
+        self.assertEqual(version, rt.UPSTREAM_VERSION)
+        self.assertEqual(version, rt.read_upstream_meta()["version"])
+
+    def test_matches_upstream_manifest(self) -> None:
+        upstream = ""
+        for line in (OCTOP_DIR.parent / "plugin.yaml").read_text(encoding="utf-8").splitlines():
+            if line.startswith("version:"):
+                upstream = line.split(":", 1)[1].strip()
+        self.assertEqual(self._manifest_version(), upstream, "sync regenerates this from upstream")
+
+    def test_no_suffixed_versions_left_behind(self) -> None:
+        offenders: list[str] = []
+        pattern = re.compile(r"\b\d+\.\d+\.\d+\.[0-9]+\b")
+        for path in sorted(OCTOP_DIR.rglob("*")):
+            if not path.is_file() or path.suffix in {".zip", ".pyc"}:
+                continue
+            if "__pycache__" in path.parts or "fixtures" in path.parts:
+                continue
+            for number, line in enumerate(path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+                if pattern.search(line):
+                    offenders.append(f"{path.relative_to(OCTOP_DIR)}:{number}: {line.strip()[:80]}")
+        self.assertEqual(offenders, [], "version suffixes must be gone")
+
+    def test_adapter_is_in_sync_with_upstream(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "sync_upstream", OCTOP_DIR / "tools" / "sync_upstream.py"
+        )
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["sync_upstream"] = module
+        spec.loader.exec_module(module)
+        self.assertEqual(module.check(), [])
 
 
 if __name__ == "__main__":
